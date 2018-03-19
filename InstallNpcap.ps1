@@ -28,6 +28,31 @@
 # - integrate into AppVeyor's Build Worker API
 #
 # Variables
+
+# Resolve-Path  "C:\Program Files (x86)\Microsoft SDKs\Windows\*\inf2cat.exe"
+# Resolve-Path  "C:\Program Files*\Npcap\NPFInstall.exe"
+# Resolve-Path  "C:\Windows\System32\Npcap\*.dll"
+
+# Install-time detection
+# ======================
+
+# You can check the existence of C:\Program Files\Npcap\NPFInstall.exe to detect Npcap's existence. If Npcap exists, you can check the file version of C:\Program Files\Npcap\NPFInstall.exe to detect Npcap e-version. The e-version also gives you the version. The NSIS code is shown below. $inst_ver is an e-version string like “5.0.7.424”
+
+# GetDllVersion "C:\Program Files\Npcap\NPFInstall.exe" $R0 $R1
+# IntOp $R2 $R0 / 0x00010000
+# IntOp $R3 $R0 & 0x0000FFFF
+# IntOp $R4 $R1 / 0x00010000
+# IntOp $R5 $R1 & 0x0000FFFF
+# StrCpy $inst_ver "$R2.$R3.$R4.$R5"
+# You can check the installation options of an already installed Npcap by reading the registry key: HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\npcap\Parameters. The entries like AdminOnly, Loopback, DltNull,Dot11Support, VlanSupport, WinPcapCompatible, etc. show the installation options. Loopback is REG_SZ type. A non-NULL value indicates the option is CHECKED. All other entries are REG_DWORD type. A 0x00000001 value indicates the option is CHECKED.
+
+# Note: Prior to Npcap 0.93, these values were stored in the Services\npcap key directly.
+
+
+
+# Get-ChildItem -Path "Cert:\CurrentUser\Root" | ? Subject -eq "CN=@sgeto"
+
+
 $urlPath = "https://nmap.org/npcap/dist/latest-npcap-installer.exe"
 $autoit = 'Run ("latest-npcap-installer.exe /disable_restore_point=yes /npf_startup=yes /loopback_support=yes /dlt_null=no /admin_only=no /dot11_support=yes /vlan_support=yes /winpcap_mode=yes")
 WinWait ("Npcap", "License Agreement")
