@@ -1,3 +1,5 @@
+# requires -version 4
+
 #
 # Copyright (C) 2018 Ali Abdulkadir <autostart.ini@gmail.com> <sgeto@ettercap-project.org>
 #
@@ -26,83 +28,369 @@
 # - next level shit:
 # https://www.autoitconsulting.com/site/scripting/autoit-cmdlets-for-windows-powershell/
 # - integrate into AppVeyor's Build Worker API
-#
-# Variables
+# - get https://nmap.org/npcap/dist/npcap-sdk-0.1.zip as well
+# - $PSScriptRoot isn't a thing when a script is call from a remote server.
+# Using:
+# (Get-Item -Path ".\" -Verbose).FullName
+# (Resolve-Path .\).Path
+# $WorkingDir = Convert-Path .
+# - use try-catch-finally
+# - convert $AutoItPosh to option
+# - add $outdir option
+# - honor -reinstall
 
-# Resolve-Path  "C:\Program Files (x86)\Microsoft SDKs\Windows\*\inf2cat.exe"
-# Resolve-Path  "C:\Program Files*\Npcap\NPFInstall.exe"
-# Resolve-Path  "C:\Windows\System32\Npcap\*.dll"
+# Script entry-point arguments:
+param(
+    [switch]$debug = $false,
+    [switch]$sdk = $false,
+    [switch]$reinstall = $true,
+    [switch]$buildbot = $false
+)
 
-# Install-time detection
-# ======================
+# Variables (and their Initial value)
+# If any of these change, things may break.
 
-# You can check the existence of C:\Program Files\Npcap\NPFInstall.exe to detect Npcap's existence. If Npcap exists, you can check the file version of C:\Program Files\Npcap\NPFInstall.exe to detect Npcap e-version. The e-version also gives you the version. The NSIS code is shown below. $inst_ver is an e-version string like “5.0.7.424”
+# $PSScriptRoot isn't a thing when calling scripts from
+# a remote location. That's why we use $WorkingDir instead.
+$WorkingDir = Convert-Path .
 
-# GetDllVersion "C:\Program Files\Npcap\NPFInstall.exe" $R0 $R1
-# IntOp $R2 $R0 / 0x00010000
-# IntOp $R3 $R0 & 0x0000FFFF
-# IntOp $R4 $R1 / 0x00010000
-# IntOp $R5 $R1 & 0x0000FFFF
-# StrCpy $inst_ver "$R2.$R3.$R4.$R5"
-# You can check the installation options of an already installed Npcap by reading the registry key: HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\npcap\Parameters. The entries like AdminOnly, Loopback, DltNull,Dot11Support, VlanSupport, WinPcapCompatible, etc. show the installation options. Loopback is REG_SZ type. A non-NULL value indicates the option is CHECKED. All other entries are REG_DWORD type. A 0x00000001 value indicates the option is CHECKED.
+$ChocoFlags = "--confirm",
+              "--stoponfirstfailure",
+              "--requirechecksum",
+              "--allow-empty-checksums-secure",
+              "--no-progress",
+              "--limitoutput",
+              "--cache-location=$WorkingDir"
+$ChocoPKG   = "autoit.commandline" # add additional packages here
+$AutoItPKG  = "autoit.commandline"
+$AutoItPosh = "$env:ChocolateyInstall\lib\$AutoItPKG\tools\install\AutoItX\AutoItX.psd1"
+$Setup      = "latest-npcap-installer.exe"
+$SetupSDK   = "npcap-sdk-0.1.zip"
 
-# Note: Prior to Npcap 0.93, these values were stored in the Services\npcap key directly.
+if($env:computername -eq "CALCULON")
+{
+    $SetupURL = "file:///C:/Users/Ali/projects/ettercap-master/contrib/"
+} else {
+    $SetupURL = "https://nmap.org/npcap/dist/"
+}
 
+$SetupFlags = "/disable_restore_point=yes",
+              "/npf_startup=yes",
+              "/loopback_support=yes",
+              "/dlt_null=no",
+              "/admin_only=no",
+              "/dot11_support=yes",
+              "/vlan_support=yes",
+              "/winpcap_mode=yes",
+              "/D=$WorkingDir"
+$SetupTitle = "Npcap"
 
+# Static Variables
+# Probably no need to worry about them. Ever.
+$SetupCopy  = "Insecure.Com LLC (`"The Nmap Project`")"
+$SetupEULA  = "License Agreement"
+$SetupLast  = "Installation Complete"
+$Banner     = "`n
+`tA Non-Interactive $SetupTitle Installation Script
+`t___________________________________________`n
+Copyright (C) 2018 Ali Abdulkadir <autostart.ini@gmail.com>`r
+"
+$Banner2    = "`r
+$SetupTitle is proprietary to $SetupCopy.
+No part of it may be redistributed, published or disclosed
+except as outlined in the written contract supplied with
+their product.`r
+"
 
-# Get-ChildItem -Path "Cert:\CurrentUser\Root" | ? Subject -eq "CN=@sgeto"
+# Here we go...
 
+function InitializeScriptEnvironment()
+{
+    # Get script start time
+    $global:TimeStart = (Get-Date)
 
-$urlPath = "https://nmap.org/npcap/dist/latest-npcap-installer.exe"
-$autoit = 'Run ("latest-npcap-installer.exe /disable_restore_point=yes /npf_startup=yes /loopback_support=yes /dlt_null=no /admin_only=no /dot11_support=yes /vlan_support=yes /winpcap_mode=yes")
-WinWait ("Npcap", "License Agreement")
-If Not WinActive ("Npcap", "License Agreement") Then WinActivate ("Npcap", "License Agreement")
-WinWaitActive ("Npcap", "License Agreement")
-Send ("!a")
-Send ("!i")
-WinWaitActive ("Npcap", "Installation Complete")
-Send ("!n")
-Send("{Enter}")'
+    # Check if we're on something headless
+    if($env:CI)
+    {
+        $global:debug = $true # for now
+        $global:reinstall = $true
+        $global:sdk = $true # for now
+        $global:buildbot = $true
 
-############
+        Write-Host $Banner -ForegroundColor White
 
-echo "Install AutoIT"
-choco install -y -r --no-progress autoit.commandline > $null
+        if($env:computername -ne "CALCULON")
+        {
+            Write-Host $Banner2 -ForegroundColor DarkRed
+        }
 
-echo "Generate InstallNpcap.au3"
-$autoit | Out-File $PSScriptRoot"\InstallNpcap.au3"
+        if($env:APPVEYOR_RE_BUILD)
+        {
+        # Always enable debug when the build was executed by the
+        # "RE-BUILD COMMIT" button on the AppVeyor web interface.
+        $global:debug = $true
+        }
 
-echo "Download the latest Npcap installer"
+        # AppVeyor preserves the directory structure during deployment.
+        # So, we need to output into the current directory to upload into the correct FTP directory.
+        #$env:BUILD_OUTPUT_FOLDER = ".";
+        # $env:APPVEYOR_REPO_BRANCH = "master"
+        # $env:BUILD_OUTPUT_FOLDER = "ClientBin"
+    }
+    else
+    {
+        # Clear the console
+        Clear-Host;
+        Write-Host $Banner -ForegroundColor White
+        if($env:computername -ne "CALCULON")
+        {
+            Write-Host "Me so soowy..." -NoNewline -ForegroundColor Red
+            Write-Host $Banner2 -ForegroundColor Red
+            throw  # :-P
+        }
 
-# https://www.reddit.com/r/PowerShell/comments/3qndf4/not_sure_if_possible_want_to_check_if_file_from/
-# https://github.com/ratchetnclank/NSClient-Checks/blob/master/check-screenconnectupdate.ps1
-# $LocalDirectory = $PSScriptRoot
-# _________
-# $LocalFile = "latest-npcap-installer.exe"
+    }
 
-# $Variable = $urlPath
+    if($debug)
+    {
+        Write-Host "[DEBUG MODE]`n" -ForegroundColor Red
+        $poshver = ($PSVersionTable).PSVersion
+        Write-Host "PowerShell Version: $poshver" -ForegroundColor Magenta
+    }
 
-# $Response = (Invoke-WebRequest -Uri $Variable -UseBasicParsing).Links
+    if(Get-Command "choco" -ErrorAction SilentlyContinue)
+    {
+        $global:have_choco = $true
+        $choco_version = (Get-Command "choco").version
+        if($debug)
+        {
+            Write-Host "Chocolatey Version: $choco_version" -ForegroundColor Magenta
+        }
+    } else {
+        $global:have_choco = $false
+        Write-Host "WARNING: This script uses Chocolatey, which was not found in your path." -ForegroundColor Red
+    }
 
-# $Response.Href -Match 'exe' | ForEach-Object { If(($_ -Split '/')[3] -eq $LocalFile){ $NewFile = ($_).Split('/')[3] ; Invoke-WebRequest -Uri $_ -OutFile $LocalDirectory\$NewFile }}
+    $global:ErrorActionPreference = "Stop" # Stop script execution after any error.
 
-# $LocalFile = $NewFile
-# -------
-wget $urlPath -UseBasicParsing -OutFile $PSScriptRoot"\latest-npcap-installer.exe"
+}
 
-############
+function InstallPackage()
+{
+    if(!$env:ChocolateyInstall)
+    {
+        Write-Host "WARNING: Environment variable "ChocolateyInstall" not set" -ForegroundColor Red
+        Write-Host "WARNING: This may not work..." -ForegroundColor Red
+    }
 
-echo "Generate InstallNpcap.exe from InstallNpcap.au3"
-Start-Process -FilePath "Aut2exe.exe" -ArgumentList "/in .\contrib\InstallNpcap.au3 /out .\contrib\InstallNpcap.exe /nopack /comp 2 /Console" -NoNewWindow -Wait
-# Invoke-Expression "cmd.exe /c Aut2exe.exe /in InstallNpcap.au3 /out InstallNpcap.exe /nopack /comp 2 /Console"
+    if($buildbot)
+    {
+        # Use --force to reinstall.
+        $ChocoFlags = "$ChocoFlags --force"
+    }
 
-# Aut2exe.exe /in InstallNpcap.au3 /out InstallNpcap.exe /nopack /comp 2 /Console
+    if($debug)
+    {
+        Write-Host "Installing needed packages via Chocolatey...`t`t" -ForegroundColor Cyan
+        Write-Host "Chocolatey Flags: $ChocoFlags" -ForegroundColor Magenta
+        Write-Host "Chocolatey Packages: $ChocoPKG" -ForegroundColor Magenta
+        choco install $ChocoFlags $ChocoPKG
+    } else {
+        Write-Host "Installing needed packages via Chocolatey...`t`t" -NoNewline -ForegroundColor Cyan
+        choco install $ChocoFlags $ChocoPKG | Out-Null
+        @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+    }
+}
 
-echo "Run InstallNpcap.exe"
-Start-Process -FilePath $PSScriptRoot"\InstallNpcap.exe" -NoNewWindow -wait
+function ImportPoshModule()
+{
+    Write-Host "Importing $AutoItPKG PowerShell module...`t" -NoNewline -ForegroundColor Cyan
+    Import-Module $AutoItPosh
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+}
 
-# Success!
-echo "Npcap installation completed"
+function DownloadFile([Parameter(Mandatory=$true)]$Link, [Parameter(Mandatory=$true)]$OutFile)
+{
+    Write-Host "Downloading $OutFile...`t`t" -NoNewline -ForegroundColor Cyan
+    Invoke-WebRequest $Link -UseBasicParsing -OutFile $WorkingDir"\$OutFile"
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+}
 
-# echo Cleanup
-# Remove-Item *.exe, *.au3
+# Write-Host "Downloading latest $SetupTitle SDK...`t" -NoNewline -ForegroundColor Cyan
+# Invoke-WebRequest $SetupURL$SDK -UseBasicParsing -OutFile $WorkingDir"\$SDK"
+# Write-Host "[SUCCESS]" -ForegroundColor Green
+
+function DecompressZip([Parameter(Mandatory=$true)]$Archive)
+{
+    Write-Host "Decompressing $Archive...`t`t`t" -NoNewline -ForegroundColor Cyan
+    try
+    {
+        # Requires .Net Framework 4.5...
+        & { Add-Type -A 'System.IO.Compression.FileSystem'; [IO.Compression.ZipFile]::ExtractToDirectory("$Archive", "$WorkingDir"); }
+    }
+    catch
+    {
+        Expand-Archive -Force -Path $WorkingDir/$Archive -DestinationPath $WorkingDir
+    }
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+}
+
+function RunSetup()
+{
+    $global:FileVersion = (Get-Item $WorkingDir"\$Setup").VersionInfo.FileVersion
+    $global:ProductName = (Get-Item $WorkingDir"\$Setup").VersionInfo.ProductName
+
+    if($debug)
+    {
+        Write-Host "Executing $Setup ($ProductName-$FileVersion)..." -ForegroundColor Magenta
+        Write-Host "Install Flags: $SetupFlags" -ForegroundColor Magenta
+        Invoke-AU3Run -Program $WorkingDir"\$Setup $SetupFlags"
+    } else {
+        Write-Host "Executing $Setup ($ProductName-$FileVersion)...`t" -NoNewline -ForegroundColor Cyan
+        Invoke-AU3Run -Program $WorkingDir"\$Setup $SetupFlags" | Out-Null
+        @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+    }
+}
+
+function FocusSetup()
+{
+    Write-Host "Setting up handle to $ProductName setup window...`t`t" -NoNewline -ForegroundColor Cyan
+    Wait-AU3Win -Title $SetupTitle | Out-Null
+    $winHandle = Get-AU3WinHandle -Title $SetupTitle
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+
+    if($debug)
+    {
+        Write-Host "Activating $ProductName window via handle..." -ForegroundColor Magenta
+    }
+    Show-AU3WinActivate -WinHandle $winHandle | Out-Null
+
+    $controlHandle = Get-AU3ControlHandle -WinHandle $winhandle -Control "Static"
+
+    if($reinstall)
+    {
+        if($debug)
+        {
+            Write-Host "(Just in case) Sending `"Yes`"...`t`t`t" -ForegroundColor Magenta
+        }
+        Send-AU3ControlKey -ControlHandle $controlHandle -Key "!y" -WinHandle $winHandle | Out-Null
+    }
+
+    Write-Host "Waiting for $ProductName $SetupEULA window...`t`t" -NoNewline -ForegroundColor Cyan
+    Wait-AU3Win -Title $SetupTitle -Text $SetupEULA | Out-Null
+    $winHandle = Get-AU3WinHandle -Title $SetupTitle
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+
+    if($debug)
+    {
+        Write-Host "Activating $ProductName $SetupEULA window..." -ForegroundColor Magenta
+    }
+    Show-AU3WinActivate -WinHandle $winHandle | Out-Null
+}
+
+function NavigateSetup()
+{
+    $winHandle = Get-AU3WinHandle -Title $SetupTitle
+    $controlHandle = Get-AU3ControlHandle -WinHandle $winhandle -Control "Static"
+
+    if($debug)
+    {
+        Write-Host "Sending `"I Agree`"..." -ForegroundColor Magenta
+    }
+    Send-AU3ControlKey -ControlHandle $controlHandle -Key "!a" -WinHandle $winHandle | Out-Null
+
+    if($debug)
+    {
+        Write-Host "Sending `"Install`"..." -ForegroundColor Magenta
+    }
+    Send-AU3ControlKey -ControlHandle $controlHandle -Key "!i" -WinHandle $winHandle | Out-Null
+
+    Write-Host "Waiting for $ProductName setup controls to return...`t`t" -NoNewline -ForegroundColor Cyan
+    Wait-AU3Win -Title $SetupTitle -Text $SetupLast | Out-Null
+    $winHandle = Get-AU3WinHandle -Title $SetupTitle
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+
+    if($debug)
+    {
+        Write-Host "Activating $ProductName Setup window..." -ForegroundColor Magenta
+    }
+    Show-AU3WinActivate -WinHandle $winHandle | Out-Null
+
+    if($debug)
+    {
+        Write-Host "Sending `"Next`"..." -ForegroundColor Magenta
+    }
+    Send-AU3ControlKey -ControlHandle $controlHandle -Key "!n" -WinHandle $winHandle | Out-Null
+
+    Write-Host "Finalizing $ProductName installation...`t`t`t" -NoNewline -ForegroundColor Cyan
+    Send-AU3ControlKey -ControlHandle $controlHandle -Key "{ENTER}" -WinHandle $winHandle | Out-Null
+    @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
+}
+
+function ScriptCleanup()
+{
+    Write-Host "`rCleaning up...`t`t`t`t`t`t" -NoNewline -ForegroundColor Yellow
+
+    $global:ErrorActionPreference = "Continue"
+
+    if(!$buildbot)
+    {
+        Clear-Content "build\internal\kph.key" -Force -ErrorAction SilentlyContinue
+        Clear-Content "build\internal\nightly.key" -Force -ErrorAction SilentlyContinue
+
+        # Start-Sleep -Seconds 1
+        Start-Sleep -Milliseconds 500
+        Remove-Item $WorkingDir"\$Setup" -Force -ErrorAction SilentlyContinue
+        if($sdk)
+        {
+            # Remove-Item $WorkingDir"\$SetupSDK" -Force -ErrorAction SilentlyContinue
+            # Remove-Item $WorkingDir"\npcap-sdk-0.1" -Force -Recurse -ErrorAction SilentlyContinue
+        }
+    @{$true = Write-Host "[DONE]`n" -ForegroundColor Yellow}[$?]
+    }
+}
+
+function ShowExecutionTime()
+{
+    $timeEnd = New-TimeSpan -Start $global:TimeStart -End $(Get-Date)
+    Write-Host "Elapsed Time: $($timeEnd.Minutes) minute(s), $($timeEnd.Seconds) second(s)"
+}
+
+function main()
+{
+    InitializeScriptEnvironment;
+    try
+    {
+        if($have_choco)
+        {
+            InstallPackage;
+            ImportPoshModule;
+        }
+        DownloadFile -Link "$SetupURL$Setup" -OutFile "$Setup";
+        if($sdk)
+        {
+            DownloadFile -Link "$SetupURL$SetupSDK" -OutFile "$SetupSDK";
+            DecompressZip "$SetupSDK";
+        }
+        RunSetup;
+        FocusSetup;
+        NavigateSetup;
+    }
+    # catch
+    # {
+        # if(($env:APPVEYOR) -and (!$env:APPVEYOR_RE_BUILD))
+        # {
+        # Do stuff and trigger rebuild to get debug output...
+        # }
+        # Display and/or handle error here.
+        # Write-Host "Caught Error. What's next?"
+    # }
+    finally
+    {
+        ScriptCleanup;
+        ShowExecutionTime;
+    }
+}
+
+# Entry point
+main;
