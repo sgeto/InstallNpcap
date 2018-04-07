@@ -346,8 +346,9 @@ function ScriptCleanup()
             # Remove-Item $WorkingDir"\$SetupSDK" -Force -ErrorAction SilentlyContinue
             # Remove-Item $WorkingDir"\npcap-sdk-0.1" -Force -Recurse -ErrorAction SilentlyContinue
         }
-    @{$true = Write-Host "[DONE]`n" -ForegroundColor Yellow}[$?]
     }
+
+    @{$true = Write-Host "[DONE]`n" -ForegroundColor Yellow}[$?]
 }
 
 function ShowExecutionTime()
