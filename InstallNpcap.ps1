@@ -212,7 +212,14 @@ function ImportPoshModule()
 function DownloadFile([Parameter(Mandatory=$true)]$Link, [Parameter(Mandatory=$true)]$OutFile)
 {
     Write-Host "Downloading $OutFile...`t`t" -NoNewline -ForegroundColor Cyan
-    Invoke-WebRequest $Link -UseBasicParsing -OutFile $WorkingDir"\$OutFile"
+    try
+    {
+        (new-object net.webclient).DownloadFile("$Link", "$WorkingDir\$OutFile")
+    }
+    catch
+    {
+        Invoke-WebRequest $Link -UseBasicParsing -OutFile $WorkingDir"\$OutFile"
+    }
     @{$true = Write-Host "[SUCCESS]" -ForegroundColor Green}[$?]
 }
 
